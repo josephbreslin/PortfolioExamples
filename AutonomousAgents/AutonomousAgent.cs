@@ -1,4 +1,4 @@
-// ================================================================================ //
+﻿// ================================================================================ //
 // AUTONOMOUS AGENTS                                                                //
 // -------------------------------------------------------------------------------- //
 // This script contains logic that enables an Agent to avoid obstacles,             //
@@ -12,233 +12,162 @@ using System.Collections;
 
 public class AutonomousAgent : MonoBehaviour
 {
-    //AGENT
-    Vector3 force = Vector3.zero;
-    Vector3 velocity = Vector3.zero;
-    Vector3 acceleration = Vector3.zero;
+    // Agent Properties
     public float mass = 1;
     public float maxSpeed = 5.0f;
-    bool isPlayer = false;
+    Vector3 force = Vector3.zero;
+    Vector3 velocity = Vector3.zero;
+    Vector3 acceleration = Vector3.zero;                
+    bool isPlayer = false;                              // Flag to determine if this agent is the player 
 
-    //WANDER
-    public float wanderTime = 3f;
-    Quaternion wanderRotation = Quaternion.identity;              //Assign to the swivel
-    Transform wanderSwivel;
+    // Wander behaviour properties
+    public float wanderTime = 3f;                       // 'wanderTime' is the time in which the wander target swivel updates rotation
+    Quaternion wanderRotation = Quaternion.identity;    // Assign to the swivel
+    Transform wanderSwivel;                             
     Transform wanderTargetTransform = null;
 
-    //FleeArrive
-    public float slowingDistance = 3.0f;
+    // Flee and arrive properties
+    public float slowingDistance = 3.0f;                // Used to determine at what point the agent will slow down
     Transform fleeTargetTransform = null;
-    float deceleration = 0.9f;
+    float deceleration = 0.9f;                          // Scaler for reducing acceleration
 
-    //OBSTACLE AVOIDANCE
-    float maxSight = 2.5f;
-    enum AvoidanceStates { LEFT, RIGHT, NONE};
-    AvoidanceStates avoidanceState = AvoidanceStates.NONE;
+    // Obstacle Avoidance Properties
+    float maxSight = 2.5f;                              
+    enum AvoidanceStates { LEFT, RIGHT, NONE};         
+    bool isAvoiding = false;                            // Used to determine if the agent must avoid an obstacle
 
-    //WEIGHTS
+    // Weights used to determine the strength of each behaviour
     public float wanderWeight = .5f;
     public float fleeArriveWeight = 1f;
     public float obstacleAvoidanceWeight = 2f;
 
     void Start()
     {
+        transform.rotation = Quaternion.Euler(0, Random.Range(0, 360), 0);              // Assign Random Rotation
 
-        transform.rotation = Quaternion.Euler(0, Random.Range(0, 360), 0);                  //Assign Random Rotation
-
-        wanderSwivel = transform.GetChild(0);
-        wanderTargetTransform = wanderSwivel.GetChild(0);
-        StartCoroutine(StartRotation());
+        wanderSwivel = transform.GetChild(0);                                           // Assign child object to act as the wander swivel    
+        wanderTargetTransform = wanderSwivel.GetChild(0);                               // Assign wander swivel child object to act as the wander target
+        StartCoroutine(StartRotation());                                                // Begin wander rotation protocol
 
         if(GameObject.FindGameObjectWithTag("Player") == this.gameObject)
         {
             isPlayer = true;
         }
-        fleeTargetTransform = GameObject.FindGameObjectWithTag("Player").transform;
-    }
+        fleeTargetTransform = GameObject.FindGameObjectWithTag("Player").transform;     // Assign the player tagged object transform as the 'fleeTargetTransform. 
+    }                                                                                   // This is only used if the player is not this gameObject.
 
     void Update()
     {
-        force = Calculate();
-        Banking();
-    }
+        force = Calculate();                                                            // Force is the sum of all behaviour output functions.
+        AccelerationSmoothing();                                                        // Function to smoothen the acceleration value.
+        ApplyAccelerationToVelocity();                                                  // Apply's acceleration to the velocity value, also clamps to 'maxSpeed' 
+        ApplyVelocityLookAt();                                                          // Applies the velocity value to the transform position of this gameObject over time.     
+    }                                                                                   // This also uses the look at function to point towards the target.
 
     private void FixedUpdate()
     {
-        ObstacleAvoidanceRayCasting();
+        ObstacleAvoidanceRayCasting();                                                  // Use raycasting to determine the avoidance direction and assign avoidance force
     }
 
-    #region Wander Rotation
-    IEnumerator StartRotation()
+    Vector3 Calculate()                                                                 // Calculate is the sum of all behaviour outputs and informs the agent's force value.
     {
-        RotateSwivel();
+        Vector3 force = Vector3.zero;
+        force += Wander() * wanderWeight;
+        force += CalculateObstacleAvoidance() * obstacleAvoidanceWeight;
+        if (!isPlayer)                                                                  // If this agent is the player tagged object then it will not flee from the player tagged object. 
+        {
+            force += FleeArrive() * fleeArriveWeight;
+        }
+        return force;
+    }
+
+    void AccelerationSmoothing()
+    {
+        Vector3 tempAcceleration = force / mass;                                        
+        float smoothRate = Mathf.Clamp(9.0f * Time.deltaTime, 0.15f, 0.4f) / 2.0f;
+        acceleration = Vector3.Lerp(acceleration, tempAcceleration, smoothRate);        // 'acceleration' is lerped to 'tempAcceleration', utilising a clamped smooth rate.
+    }
+
+    void ApplyAccelerationToVelocity()
+    {
+        velocity += acceleration * Time.deltaTime;                                      // Acceleration is added to velocity, the magnitude of velocity is then clamped to the 'maxSpeed'
+        velocity = Vector3.ClampMagnitude(velocity, maxSpeed);
+    }
+
+    void ApplyVelocityLookAt()
+    {
+        if (velocity.magnitude > 0.0001f)
+        {
+            transform.LookAt(transform.position + velocity, transform.up);              // Agent's rotation is determined using the lookAt function.
+            velocity *= 0.99f;                                                          // Decelerate agent
+        }
+        transform.position += velocity * Time.deltaTime;                                // Agent's position is updated over time, by adding velocity multiplied by the time delta to the position.
+    }
+
+    IEnumerator StartRotation()                                                         // Use this to trigger wander rotation every n seconds
+    {
+        UpdateWanderSwivelRotation();
         yield return new WaitForSeconds(wanderTime);
         StartCoroutine(StartRotation());
     }
-    void RotateSwivel()
+    void UpdateWanderSwivelRotation()
     {
-        wanderRotation.eulerAngles = GetEulerAngle();
-        wanderSwivel.rotation = wanderRotation;
+        wanderRotation.eulerAngles = new Vector3(0, Random.Range(0, 360), 0);
+        wanderSwivel.rotation = wanderRotation;                                         // Update wanderSwivel rotation with a random rotation
     }
 
-    Vector3 GetEulerAngle()
+    Vector3 Wander()                                                                    // Returns the wanderValue used to determine the agents movement direction 
     {
-        Vector3 newRotation = new Vector3(0, Random.Range(0, 360), 0);
-        return newRotation;
-    }
-    #endregion
-
-    Vector3 Wander()
-    {
-        Vector3 desired = wanderTargetTransform.position - transform.position;
-        desired.Normalize();
-        desired *= maxSpeed;
-        return desired - velocity;
+        Vector3 desiredVelocity = wanderTargetTransform.position - transform.position;             
+        desiredVelocity.Normalize();
+        desiredVelocity *= maxSpeed;
+        return desiredVelocity - velocity;
     }
 
     Vector3 FleeArrive()
     {
-        Vector3 toTarget = transform.position - fleeTargetTransform.position;
+        Vector3 toTarget = transform.position - fleeTargetTransform.position;           // Determine the distance to the flee target
         float distance = toTarget.magnitude;
         if (distance > slowingDistance)
         {
-            Debug.DrawLine(transform.position, fleeTargetTransform.position, Color.cyan);
-            return Vector3.zero;
+            return Vector3.zero;                                                        // Return zero velocity if the agent is out of flee range.
         }
-        else
-        {
-            Debug.DrawLine(transform.position, fleeTargetTransform.position, Color.red);
-        }
-        float rampedSpeed = maxSpeed * (distance / slowingDistance * deceleration);
+        float rampedSpeed = maxSpeed * (distance / slowingDistance * deceleration);     
         float clamped = Mathf.Min(rampedSpeed, maxSpeed);
-        Vector3 desired = clamped * (toTarget / distance);
-        return desired - velocity;
+        Vector3 desiredVelocity = clamped * (toTarget / distance);
+        return desiredVelocity - velocity;
     }
-
-    Vector3 Calculate()
-    {
-        force = Vector3.zero;
-        force += Wander() * wanderWeight;
-        force += CalculateObstacleAvoidance() * obstacleAvoidanceWeight;
-        if(!isPlayer)
-            force += FleeArrive() * fleeArriveWeight;
-        return force;
-    }
-    
-    #region Banking
-    void Banking()
-    {
-        AccelerationSmoothing();
-        ApplyAccelerationToVelocity();
-        ApplyLerpAndLookAt();
-    }
-    void AccelerationSmoothing()
-    {
-        Vector3 tempAcceleration = force / mass;
-        float smoothRate = Mathf.Clamp(9.0f * Time.deltaTime, 0.15f, 0.4f) / 2.0f;
-        acceleration = Vector3.Lerp(acceleration, tempAcceleration, smoothRate);
-    }
-    void ApplyAccelerationToVelocity()
-    {
-        velocity += acceleration * Time.deltaTime;
-        velocity = Vector3.ClampMagnitude(velocity, maxSpeed);
-    }
-    void ApplyLerpAndLookAt()
-    {
-        float smoothRate = Time.deltaTime * 3.0f;
-        if (velocity.magnitude > 0.0001f)
-        {
-            Debug.DrawLine(transform.position, transform.position + velocity, Color.magenta);
-            transform.LookAt(transform.position + velocity, transform.up);
-            velocity *= 0.99f;
-        }
-        transform.position += velocity * Time.deltaTime;
-    }
-
-
-    #endregion
-
-    Vector3 CalculateObstacleAvoidance()
+                                                                                       
+    Vector3 CalculateObstacleAvoidance()                                                // Change direction of agent when it is avoiding an obstacle
     {
         Vector3 avoidanceForce = Vector3.zero;
-        switch (avoidanceState)
+        if (isAvoiding)
         {
-            case AvoidanceStates.NONE:
-                avoidanceForce = Vector3.zero;
-                break;
-            case AvoidanceStates.RIGHT:
-                //Turn Left to avoid right
-                avoidanceForce = (transform.forward * (-1 * maxSight)); //+ (transform.right * maxSight * -1); //(maxSight/2) *
-                break;
-            case AvoidanceStates.LEFT:
-                //turn right to avoid left
-                avoidanceForce = (transform.forward * (-1 * maxSight));// + (transform.right * maxSight);
-                break;
-            default:
-                avoidanceForce = Vector3.zero;
-                break;
+            avoidanceForce = (transform.forward * (-1 * maxSight));                     
         }
         avoidanceForce.Normalize();
-        //avoidanceForce *= maxSpeed;
+        avoidanceForce *= maxSpeed;
         return avoidanceForce;
     }
-
+                                                                                        // Two Raycasts are used, one from each shoulder facing forward
     void ObstacleAvoidanceRayCasting()
     {
-        bool leftContact = false;
-        bool rightContact = false;
-        float offset = 0.5f;
-        float leftLength = maxSight;
-        float rightLength = maxSight;
-
-        //Left Bumper
+        isAvoiding = false;
         RaycastHit leftHit;
-        Vector3 leftBumper = transform.position - transform.right * offset;
-        if (Physics.Raycast(leftBumper, transform.forward, out leftHit, maxSight))
-        {
-            Debug.DrawRay(leftBumper, transform.forward * maxSight, Color.red);
-            leftContact = true;
-            leftLength = Vector3.Distance(leftBumper, leftHit.point);
-        }
-        else
-        {
-            Debug.DrawRay(leftBumper, transform.forward * maxSight, Color.yellow);
-        }
-
-        //Right Bumber
         RaycastHit rightHit;
-        Vector3 rightBumper = transform.position + transform.right * offset;
-        if (Physics.Raycast(rightBumper, transform.forward,out rightHit, maxSight))
-        {
-            Debug.DrawRay(rightBumper, transform.forward * maxSight, Color.red);
-            rightContact = true;
-            rightLength = Vector3.Distance(rightBumper, rightHit.point);
-        }
-        else
-        {
-            Debug.DrawRay(rightBumper, transform.forward * maxSight, Color.yellow);
-        }
-   
-        if(!rightContact && !leftContact)
-        {
-            avoidanceState = AvoidanceStates.NONE;
-        }
-        if (rightContact && leftContact)
-        {
-            //check to see which ray is longer
-            if(leftLength > rightLength)
-                avoidanceState = AvoidanceStates.LEFT;
-            else
-                avoidanceState = AvoidanceStates.RIGHT;
 
-        }
-        if (rightContact && !leftContact)
+        Vector3 leftBumper = transform.position - transform.right * 0.5f;
+        if (Physics.Raycast(leftBumper, transform.forward, out leftHit, maxSight))      // Flag if contact is made with left raycast
         {
-            avoidanceState = AvoidanceStates.RIGHT;
-        }
-        if (leftContact && !rightContact)
+            isAvoiding = true;
+        }                                                                 
+        Vector3 rightBumper = transform.position + transform.right * 0.5f;
+        if (Physics.Raycast(rightBumper, transform.forward, out rightHit, maxSight))    // Flag if contact is made with right raycast
         {
-            avoidanceState = AvoidanceStates.LEFT;
+            isAvoiding = true;
         }
     }
+
+
+
 }
